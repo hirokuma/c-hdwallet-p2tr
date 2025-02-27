@@ -17,10 +17,10 @@ TESTS_SOURCE_FILES = $(addprefix $(TESTS_DIRECTORY)/, $(TESTS_FILES) )
 
 
 # includes common to all targets(-I<dir>)
-INC_PATHS = -I../libs
+INC_PATHS = -I${HOME}/.local/include
 
 # Link Library
-LIBS = -L ../libs/libwally-core -lwallycore -lsecp256k1
+LIBS = -L ${HOME}/.local/lib -lwallycore -lsecp256k1 -lmbedcrypto -lmbedtls -lmbedx509
 
 CFLAGS =
 LDFLAGS =
@@ -135,10 +135,10 @@ $(OUTPUT_BINARY_DIRECTORY)/$(OUTPUT_FILENAME): $(BUILD_DIRECTORIES) $(OBJECTS)
 	@echo Linking target: $(OUTPUT_FILENAME)
 	$(NO_ECHO)$(CC) $(LDFLAGS) $(OBJECTS) $(LIBS) -o $(OUTPUT_BINARY_DIRECTORY)/$(OUTPUT_FILENAME)
 
-mem:
+leak:
 	valgrind --tool=memcheck --leak-check=full ./tst
 
 clean:
 	$(RM) $(OBJECT_DIRECTORY) $(OUTPUT_BINARY_DIRECTORY)/$(OUTPUT_FILENAME)
 
-.PHONY: mem
+.PHONY: leak

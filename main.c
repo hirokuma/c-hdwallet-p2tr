@@ -38,35 +38,44 @@ static void dump(const uint8_t *data, size_t len)
 
 static int test_xprv_xpub(const struct ext_key *key, const char *title, const char *test_xprv, const char *test_xpub)
 {
+    int ret = 1;
     int rc;
-    char *xprv;
-    char *xpub;
+    char *xprv = NULL;
+    char *xpub = NULL;
 
     rc = bip32_key_to_base58(key, BIP32_FLAG_KEY_PRIVATE, &xprv);
     if (rc != WALLY_OK) {
         printf("error: bip32_key_to_base58: %d\n", rc);
-        return 1;
+        goto cleanup;
     }
     printf("%s xprv key: %s\n", title, xprv);
     if (strcmp(xprv, test_xprv) != 0) {
         printf("error: %s xprv not same\n", title);
-        return 1;
+        goto cleanup;
     }
-    wally_free_string(xprv);
 
     rc = bip32_key_to_base58(key, BIP32_FLAG_KEY_PUBLIC, &xpub);
     if (rc != WALLY_OK) {
         printf("error: bip32_key_to_base58: %d\n", rc);
-        return 1;
+        goto cleanup;
     }
     printf("%s xpub key: %s\n", title, xpub);
     if (strcmp(xpub, test_xpub) != 0) {
         printf("error: %s xpub not same\n", title);
-        return 1;
+        goto cleanup;
     }
-    wally_free_string(xpub);
 
-    return 0;
+    ret = 0;
+
+cleanup:
+    if (xprv != NULL) {
+        wally_free_string(xprv);
+    }
+    if (xpub != NULL) {
+        wally_free_string(xpub);
+    }
+
+    return ret;
 }
 
 static int wally_bip32_key_to_addr_segwit_v1_keypath(const struct ext_key *hdkey, const char *addr_family,
@@ -102,56 +111,30 @@ static void rbytes(uint8_t *b, size_t len)
     memset(b, 0x00, len);
 }
 
-static void wallet(void)
+static int create_wallet(
+    struct ext_key **key_external,
+    struct ext_key **key_change,
+    const uint8_t seed[BIP39_SEED_LEN_512])
 {
+    int ret = 1;
     int rc;
-
-    uint8_t entropy[16];
-    rbytes(entropy, sizeof(entropy));
-
-    char *mnem = NULL;
-    rc = bip39_mnemonic_from_bytes(NULL, entropy, sizeof(entropy), &mnem);
-    if (rc != WALLY_OK) {
-        printf("error: bip39_mnemonic_from_bytes: %d\n", rc);
-        return;
-    }
-
-    uint8_t seed[BIP39_SEED_LEN_512];
-    size_t seed_len;
-    rc = bip39_mnemonic_to_seed(
-             mnem,
-             NULL,
-             seed, BIP39_SEED_LEN_512, &seed_len);
-    if (rc != WALLY_OK) {
-        printf("error: bip39_mnemonic_to_seed: %d\n", rc);
-        return;
-    }
-
-    printf("seed: ");
-    dump(seed, seed_len);
-    printf("mnemonic: %s\n", mnem);
-    if (strcmp(mnem, MNEMONIC) != 0) {
-        printf("error: mnemonic not same\n");
-        return;
-    }
-
-    wally_free_string(mnem);
+    struct ext_key *key_root = NULL;
+    struct ext_key *key_account = NULL;
 
     // m
-    struct ext_key *key_root;
     rc = bip32_key_from_seed_alloc(
-             seed, sizeof(seed),
+             seed, BIP39_SEED_LEN_512,
              BIP32_VER_MAIN_PRIVATE,
              0,
              &key_root);
     if (rc != WALLY_OK) {
         printf("error: bip32_key_from_seed_alloc: %d\n", rc);
-        return;
+        goto cleanup;
     }
 
     rc = test_xprv_xpub(key_root, "Root", ROOT_XPRV, ROOT_XPUB);
     if (rc != 0) {
-        return;
+        goto cleanup;
     }
 
     const uint32_t PURPOSE = 86;
@@ -166,7 +149,6 @@ static void wallet(void)
         BIP32_INITIAL_HARDENED_CHILD + COIN_TYPE,
         BIP32_INITIAL_HARDENED_CHILD + ACCOUNT
     };
-    struct ext_key *key_account;
     rc = bip32_key_from_parent_path_alloc(
              key_root,
              path_account, ARRAY_SIZE(path_account),
@@ -174,160 +156,232 @@ static void wallet(void)
              &key_account);
     if (rc != WALLY_OK) {
         printf("error: bip32_key_from_parent_path_alloc: %d\n", rc);
-        return;
+        goto cleanup;
     }
-    bip32_key_free(key_root);
-    // 対外向けとお釣り向けに作ることが多いので一旦 account までのパスで作る
 
     rc = test_xprv_xpub(key_account, "Account", ACCOUNT_XPRV, ACCOUNT_XPUB);
     if (rc != 0) {
-        return;
+        goto cleanup;
     }
-
-    struct ext_key *key_external;
-    struct ext_key *key_change;
 
     // m/86'/0'/0'/0
     rc = bip32_key_from_parent_alloc(
              key_account,
              CHANGE_EXT,
              BIP32_FLAG_KEY_PRIVATE,
-             &key_external);
+             key_external);
     if (rc != WALLY_OK) {
         printf("error: bip32_key_from_parent_alloc(ext): %d\n", rc);
-        return;
+        goto cleanup;
     }
-
-    uint32_t index;
-    struct ext_key *key_address;
-    char *addr;
-    const char *title;
-
-    // m/86'/0'/0'/0/0
-    title = "m/86'/0'/0'/0/0";
-    index = 0;
-    rc = bip32_key_from_parent_alloc(
-                key_external,
-                index,
-                BIP32_FLAG_KEY_PRIVATE,
-                &key_address);
-    if (rc != WALLY_OK) {
-        printf("error: bip32_key_from_parent_alloc(addr): %d\n", rc);
-        return;
-    }
-
-    rc = test_xprv_xpub(key_address, title, XPRV_0_0, XPUB_0_0);
-    if (rc != 0) {
-        return;
-    }
-
-    rc = wally_bip32_key_to_addr_segwit_v1_keypath(key_address, "bc", 0, &addr);
-    if (rc != WALLY_OK) {
-        printf("error: bip32_key_from_parent_alloc(%s): %d\n", title, rc);
-        return;
-    }
-
-    printf("%s addr: %s\n", title, addr);
-    if (strcmp(addr, ADDR_0_0) != 0) {
-        printf("error: %s address not same\n", title);
-        return;
-    }
-    wally_free_string(addr);
-    bip32_key_free(key_address);
-
-    // m/86'/0'/0'/0/1
-    title = "m/86'/0'/0'/0/1";
-    index = 1;
-    rc = bip32_key_from_parent_alloc(
-                key_external,
-                index,
-                BIP32_FLAG_KEY_PRIVATE,
-                &key_address);
-    if (rc != WALLY_OK) {
-        printf("error: bip32_key_from_parent_alloc(addr): %d\n", rc);
-        return;
-    }
-
-    rc = test_xprv_xpub(key_address, title, XPRV_0_1, XPUB_0_1);
-    if (rc != 0) {
-        return;
-    }
-
-    rc = wally_bip32_key_to_addr_segwit_v1_keypath(key_address, "bc", 0, &addr);
-    if (rc != WALLY_OK) {
-        printf("error: bip32_key_from_parent_alloc(%s): %d\n", title, rc);
-        return;
-    }
-
-    printf("%s addr: %s\n", title, addr);
-    if (strcmp(addr, ADDR_0_1) != 0) {
-        printf("error: %s address not same\n", title);
-        return;
-    }
-    wally_free_string(addr);
-    bip32_key_free(key_address);
-
-    bip32_key_free(key_external);
-
 
     // m/86'/0'/0'/1
     rc = bip32_key_from_parent_alloc(
              key_account,
              CHANGE_CHG,
              BIP32_FLAG_KEY_PRIVATE,
-             &key_change);
+             key_change);
     if (rc != WALLY_OK) {
         printf("error: bip32_key_from_parent_alloc(chg): %d\n", rc);
-        return;
+        goto cleanup;
     }
-    bip32_key_free(key_account);
+
+    ret = 0;
+
+cleanup:
+    if (key_account != NULL) {
+        bip32_key_free(key_account);
+    }
+    if (key_root != NULL) {
+        bip32_key_free(key_root);
+    }
+
+    return ret;
+}
+
+static int create_address(
+    char **addr,
+    struct ext_key **key_address,
+    const struct ext_key *key_external,
+    uint32_t index)
+{
+    int rc;
+
+    rc = bip32_key_from_parent_alloc(
+                key_external,
+                index,
+                BIP32_FLAG_KEY_PRIVATE,
+                key_address);
+    if (rc != WALLY_OK) {
+        printf("error: bip32_key_from_parent_alloc: %d\n", rc);
+        return 1;
+    }
+
+    rc = wally_bip32_key_to_addr_segwit_v1_keypath(*key_address, "bc", 0, addr);
+    if (rc != WALLY_OK) {
+        printf("error: wally_bip32_key_to_addr_segwit_v1_keypath: %d\n", rc);
+            return 1;
+    }
+
+    return 0;
+}
+
+static int wallet(void)
+{
+    int ret = 1;
+    int rc;
+
+    char *mnem = NULL;
+    struct ext_key *key_external = NULL;
+    struct ext_key *key_change = NULL;
+    struct ext_key *key_addr_ext = NULL;
+    struct ext_key *key_addr_chg = NULL;
+    char *addr = NULL;
+
+
+    uint8_t entropy[16];
+    rbytes(entropy, sizeof(entropy));
+
+    rc = bip39_mnemonic_from_bytes(NULL, entropy, sizeof(entropy), &mnem);
+    if (rc != WALLY_OK) {
+        printf("error: bip39_mnemonic_from_bytes: %d\n", rc);
+        goto cleanup;
+    }
+
+    uint8_t seed[BIP39_SEED_LEN_512];
+    size_t seed_len;
+    rc = bip39_mnemonic_to_seed(
+             mnem,
+             NULL,
+             seed, BIP39_SEED_LEN_512, &seed_len);
+    if (rc != WALLY_OK) {
+        printf("error: bip39_mnemonic_to_seed: %d\n", rc);
+        goto cleanup;
+    }
+
+    printf("seed: ");
+    dump(seed, seed_len);
+    printf("mnemonic: %s\n", mnem);
+    if (strcmp(mnem, MNEMONIC) != 0) {
+        printf("error: mnemonic not same\n");
+        goto cleanup;
+    }
+
+    wally_free_string(mnem);
+    mnem = NULL;
+
+    rc = create_wallet(&key_external, &key_change, seed);
+    if (rc != 0) {
+        goto cleanup;
+    }
+
+    const char *title;
+
+    // m/86'/0'/0'/0/0
+    title = "m/86'/0'/0'/0/0";
+    rc = create_address(&addr, &key_addr_ext, key_external, 0);
+    if (rc != WALLY_OK) {
+        printf("error: create_address(%s): %d\n", title, rc);
+        goto cleanup;
+    }
+    rc = test_xprv_xpub(key_addr_ext, title, XPRV_0_0, XPUB_0_0);
+    if (rc != 0) {
+        goto cleanup;
+    }
+    printf("%s addr: %s\n", title, addr);
+    if (strcmp(addr, ADDR_0_0) != 0) {
+        printf("error: %s address not same\n", title);
+        goto cleanup;
+    }
+    wally_free_string(addr);
+    bip32_key_free(key_addr_ext);
+
+    // m/86'/0'/0'/0/1
+    title = "m/86'/0'/0'/0/1";
+    rc = create_address(&addr, &key_addr_ext, key_external, 1);
+    if (rc != WALLY_OK) {
+        printf("error: create_address(%s): %d\n", title, rc);
+        goto cleanup;
+    }
+    rc = test_xprv_xpub(key_addr_ext, title, XPRV_0_1, XPUB_0_1);
+    if (rc != 0) {
+        goto cleanup;
+    }
+    printf("%s addr: %s\n", title, addr);
+    if (strcmp(addr, ADDR_0_1) != 0) {
+        printf("error: %s address not same\n", title);
+        goto cleanup;
+    }
+    wally_free_string(addr);
+    bip32_key_free(key_addr_ext);
+    key_addr_ext = NULL;
 
     // m/86'/0'/0'/1/0
     title = "m/86'/0'/0'/1/0";
-    index = 0;
-    rc = bip32_key_from_parent_alloc(
-                key_change,
-                index,
-                BIP32_FLAG_KEY_PRIVATE,
-                &key_address);
+    rc = create_address(&addr, &key_addr_chg, key_change, 0);
     if (rc != WALLY_OK) {
-        printf("error: bip32_key_from_parent_alloc(%s): %d\n", title, rc);
-        return;
+        printf("error: create_address(%s): %d\n", title, rc);
+        goto cleanup;
     }
-
-    rc = test_xprv_xpub(key_address, title, XPRV_1_0, XPUB_1_0);
+    rc = test_xprv_xpub(key_addr_chg, title, XPRV_1_0, XPUB_1_0);
     if (rc != 0) {
-        return;
+        goto cleanup;
     }
-
-    rc = wally_bip32_key_to_addr_segwit_v1_keypath(key_address, "bc", 0, &addr);
-    if (rc != WALLY_OK) {
-        printf("error: bip32_key_from_parent_alloc(%s): %d\n", title, rc);
-        return;
-    }
-
     printf("%s addr: %s\n", title, addr);
     if (strcmp(addr, ADDR_1_0) != 0) {
         printf("error: %s address not same\n", title);
-        return;
+        goto cleanup;
     }
     wally_free_string(addr);
-    bip32_key_free(key_address);
-    bip32_key_free(key_change);
+    bip32_key_free(key_addr_chg);
+    addr = NULL;
+    key_addr_chg = NULL;
+
+    ret = 0;
+
+cleanup:
+    if (addr != NULL) {
+        wally_free_string(addr);
+    }
+    if (key_addr_chg != NULL) {
+        bip32_key_free(key_addr_chg);
+    }
+    if (key_addr_ext != NULL) {
+        bip32_key_free(key_addr_ext);
+    }
+    if (key_external != NULL) {
+        bip32_key_free(key_external);
+    }
+    if (key_change != NULL) {
+        bip32_key_free(key_change);
+    }
+    if (mnem != NULL) {
+        wally_free_string(mnem);
+    }
+
+    return ret;
 }
 
 int main(void)
 {
+    int ret = 1;
     int rc = wally_init(0);
     if (rc != WALLY_OK) {
         return 1;
     }
 
-    wallet();
+    rc = wallet();
+    if (rc != 0) {
+        printf("error: wallet\n");
+        goto cleanup;
+    }
 
+    ret = 0;
+
+cleanup:
     rc = wally_cleanup(0);
     if (rc != WALLY_OK) {
         return 1;
     }
-    return 0;
+    return ret;
 }
